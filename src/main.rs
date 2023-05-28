@@ -37,21 +37,27 @@ enum Payload {
     EchoOk {
         echo: String,
     },
+
+    Generate,
+    GenerateOk {
+        id: String,
+    }
 }
 
 struct Node {
-    id: usize,
+    node_id: Option<String>,
+    msg_id: usize,
 }
 
 impl Node {
     fn step(&mut self, input: Message, output: &mut StdoutLock) -> anyhow::Result<()> {
         match input.body.payload {
-            Payload::Init { .. } => {
+            Payload::Init { node_id, .. } => {
                 let reply = Message {
                     src: input.dest,
                     dest: input.src,
                     body: Body {
-                        id: Some(self.id),
+                        id: Some(self.msg_id),
                         in_reply_to: input.body.id,
                         payload: Payload::InitOk,
                     }
@@ -60,7 +66,9 @@ impl Node {
                 serde_json::to_writer(&mut *output, &reply)?;
                 output.write_all(b"\n")?;
 
-                self.id += 1;
+                self.node_id = Some(node_id);
+
+                self.msg_id += 1;
             },
             Payload::InitOk => bail!("node received init_ok message"),
 
@@ -69,7 +77,7 @@ impl Node {
                     src: input.dest,
                     dest: input.src,
                     body: Body {
-                        id: Some(self.id),
+                        id: Some(self.msg_id),
                         in_reply_to: input.body.id,
                         payload: Payload::EchoOk {
                             echo,
@@ -80,9 +88,34 @@ impl Node {
                 serde_json::to_writer(&mut *output, &reply)?;
                 output.write_all(b"\n")?;
 
-                self.id += 1;
+                self.msg_id += 1;
             },
             Payload::EchoOk { .. } => {},
+
+            Payload::Generate => {
+                let unique_id = format!("{}#{}",
+                    self.node_id.as_ref().expect("node to be initialized"),
+                    self.msg_id
+                );
+
+                let reply = Message {
+                    src: input.dest,
+                    dest: input.src,
+                    body: Body {
+                        id: Some(self.msg_id),
+                        in_reply_to: input.body.id,
+                        payload: Payload::GenerateOk {
+                            id: unique_id,
+                        },
+                    }
+                };
+
+                serde_json::to_writer(&mut *output, &reply)?;
+                output.write_all(b"\n")?;
+
+                self.msg_id += 1;
+            },
+            Payload::GenerateOk { .. } => bail!("node received generate_ok message"),
         };
 
         return Ok(());
@@ -95,7 +128,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut stdout = std::io::stdout().lock();
 
-    let mut node = Node { id: 0 };
+    let mut node = Node { node_id: None, msg_id: 0 };
 
     for input in inputs {
         let input = input.context("input from stdin could not be deserialized")?;
