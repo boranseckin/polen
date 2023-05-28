@@ -12,11 +12,32 @@ struct Message {
     body: Body,
 }
 
+impl Message {
+    fn reply(&self, node: &mut Node, payload: Payload, output: &mut StdoutLock) -> anyhow::Result<()> {
+        let reply = Self {
+            src: node.node_id.clone().expect("node to be initialized"),
+            dest: self.src.clone(),
+            body: Body {
+                msg_id: Some(node.msg_id),
+                in_reply_to: self.body.msg_id,
+                payload,
+            },
+        };
+
+        serde_json::to_writer(&mut *output, &reply)?;
+        output.write_all(b"\n")?;
+
+        node.msg_id += 1;
+
+        return Ok(());
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Body {
-    #[serde(rename = "msg_id")]
-    id: Option<usize>,
+    msg_id: Option<usize>,
     in_reply_to: Option<usize>,
+
     #[serde(flatten)]
     payload: Payload,
 }
@@ -51,44 +72,15 @@ struct Node {
 
 impl Node {
     fn step(&mut self, input: Message, output: &mut StdoutLock) -> anyhow::Result<()> {
-        match input.body.payload {
+        match &input.body.payload {
             Payload::Init { node_id, .. } => {
-                let reply = Message {
-                    src: input.dest,
-                    dest: input.src,
-                    body: Body {
-                        id: Some(self.msg_id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::InitOk,
-                    }
-                };
-
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
-
-                self.node_id = Some(node_id);
-
-                self.msg_id += 1;
+                self.node_id = Some(node_id.clone());
+                input.reply(self, Payload::InitOk, output)?;
             },
             Payload::InitOk => bail!("node received init_ok message"),
 
             Payload::Echo { echo } => {
-                let reply = Message {
-                    src: input.dest,
-                    dest: input.src,
-                    body: Body {
-                        id: Some(self.msg_id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::EchoOk {
-                            echo,
-                        },
-                    }
-                };
-
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
-
-                self.msg_id += 1;
+                input.reply(self, Payload::EchoOk { echo: echo.clone() }, output)?;
             },
             Payload::EchoOk { .. } => {},
 
@@ -98,22 +90,7 @@ impl Node {
                     self.msg_id
                 );
 
-                let reply = Message {
-                    src: input.dest,
-                    dest: input.src,
-                    body: Body {
-                        id: Some(self.msg_id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::GenerateOk {
-                            id: unique_id,
-                        },
-                    }
-                };
-
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
-
-                self.msg_id += 1;
+                input.reply(self, Payload::GenerateOk { id: unique_id }, output)?;
             },
             Payload::GenerateOk { .. } => bail!("node received generate_ok message"),
         };
@@ -124,9 +101,9 @@ impl Node {
 
 fn main() -> anyhow::Result<()> {
     let stdin = std::io::stdin().lock();
-    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
-
     let mut stdout = std::io::stdout().lock();
+
+    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
 
     let mut node = Node { node_id: None, msg_id: 0 };
 
