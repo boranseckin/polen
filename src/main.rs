@@ -1,6 +1,6 @@
 #![allow(clippy::needless_return)]
 
-use std::io::{StdoutLock, Write};
+use std::{io::{StdoutLock, Write}, collections::HashMap};
 
 use anyhow::{Context, bail};
 use serde::{Serialize, Deserialize};
@@ -13,10 +13,10 @@ struct Message {
 }
 
 impl Message {
-    fn reply(&self, node: &mut Node, payload: Payload, output: &mut StdoutLock) -> anyhow::Result<()> {
+    fn reply(self, node: &mut Node, payload: Payload, output: &mut StdoutLock) -> anyhow::Result<()> {
         let reply = Self {
             src: node.node_id.clone().expect("node to be initialized"),
-            dest: self.src.clone(),
+            dest: self.src,
             body: Body {
                 msg_id: Some(node.msg_id),
                 in_reply_to: self.body.msg_id,
@@ -62,12 +62,28 @@ enum Payload {
     Generate,
     GenerateOk {
         id: String,
-    }
+    },
+
+    Broadcast {
+        message: usize,
+    },
+    BroadcastOk,
+
+    Read,
+    ReadOk {
+        messages: Vec<usize>,
+    },
+
+    Topology {
+        topology: HashMap<String, Vec<String>>,
+    },
+    TopologyOk,
 }
 
 struct Node {
     node_id: Option<String>,
     msg_id: usize,
+    messages: Vec<usize>,
 }
 
 impl Node {
@@ -80,11 +96,14 @@ impl Node {
             Payload::InitOk => bail!("node received init_ok message"),
 
             Payload::Echo { echo } => {
-                input.reply(self, Payload::EchoOk { echo: echo.clone() }, output)?;
+                let echo = echo.clone();
+                input.reply(self, Payload::EchoOk { echo }, output)?;
             },
             Payload::EchoOk { .. } => {},
 
             Payload::Generate => {
+                // node_id's uniqueness is guarenteed by the network
+                // msg_id's uniqueness is guarenteed by the node implementation
                 let unique_id = format!("{}#{}",
                     self.node_id.as_ref().expect("node to be initialized"),
                     self.msg_id
@@ -93,6 +112,23 @@ impl Node {
                 input.reply(self, Payload::GenerateOk { id: unique_id }, output)?;
             },
             Payload::GenerateOk { .. } => bail!("node received generate_ok message"),
+
+            Payload::Broadcast { message } => {
+                self.messages.push(*message);
+                input.reply(self, Payload::BroadcastOk, output)?;
+            },
+            Payload::BroadcastOk => {},
+
+            Payload::Read => {
+                let messages = self.messages.clone();
+                input.reply(self, Payload::ReadOk { messages }, output)?;
+            },
+            Payload::ReadOk { .. } => {},
+
+            Payload::Topology { .. } => {
+                input.reply(self, Payload::TopologyOk, output)?;
+            },
+            Payload::TopologyOk => {},
         };
 
         return Ok(());
@@ -105,7 +141,7 @@ fn main() -> anyhow::Result<()> {
 
     let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
 
-    let mut node = Node { node_id: None, msg_id: 0 };
+    let mut node = Node { node_id: None, msg_id: 0, messages: Vec::new() };
 
     for input in inputs {
         let input = input.context("input from stdin could not be deserialized")?;
